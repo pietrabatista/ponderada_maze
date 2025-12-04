@@ -1,9 +1,8 @@
-#include "rclcpp/rclcpp.hpp"              // biblioteca ROS Client para C++
-#include "cg_interfaces/srv/get_map.hpp"  // definição do serviço GetMap
-#include "cg_interfaces/srv/move_cmd.hpp" // definição do serviço MoveCmd
+#include "rclcpp/rclcpp.hpp"
+#include "cg_interfaces/srv/get_map.hpp"
+#include "cg_interfaces/srv/move_cmd.hpp"
 
 #include <chrono>
-#include <cstdlib>
 #include <memory>
 #include <iostream>
 #include <vector>
@@ -11,25 +10,21 @@
 #include <queue>
 #include <algorithm>
 #include <string>
-#include <utility>
 
-using namespace std::chrono_literals; // para usar 1s, 500ms, etc.
+using namespace std::chrono_literals;
 
 using GetMap  = cg_interfaces::srv::GetMap;
 using MoveCmd = cg_interfaces::srv::MoveCmd;
 
-// Estrutura para representar uma posição (linha, coluna) no grid
 struct Pos {
     int r;
     int c;
 };
 
-// Função para verificar se uma célula é livre (transitável)
 bool is_free(char cell) {
     return (cell == 'f' || cell == 'r' || cell == 't');
 }
 
-// BFS para encontrar o caminho mais curto entre start e goal
 std::vector<Pos> bfs_path(const std::vector<std::vector<char>>& grid,
                           Pos start, Pos goal)
 {
@@ -93,60 +88,7 @@ std::vector<Pos> bfs_path(const std::vector<std::vector<char>>& grid,
     return path;
 }
 
-// ============ PARTE 2: EXPLORAR E CONSTRUIR O MAPA ============
-// Dado o mapa "verdadeiro" (grid) e a posição inicial,
-// simula um robô que não conhece o mapa e vai explorando aos poucos.
-std::vector<std::vector<char>> explore_and_build_map(
-    const std::vector<std::vector<char>>& true_grid,
-    Pos start)
-{
-    int rows = true_grid.size();
-    int cols = true_grid[0].size();
-
-    // '?' = célula desconhecida
-    std::vector<std::vector<char>> discovered(rows, std::vector<char>(cols, '?'));
-    std::vector<std::vector<bool>> visited(rows, std::vector<bool>(cols, false));
-    std::queue<Pos> q;
-
-    const int dr[4] = {-1, 1, 0, 0};
-    const int dc[4] = {0, 0, -1, 1};
-
-    // Robô começa na posição start: ele "sabe" onde está.
-    discovered[start.r][start.c] = true_grid[start.r][start.c];
-    visited[start.r][start.c] = true;
-    q.push(start);
-
-    while (!q.empty()) {
-        Pos cur = q.front();
-        q.pop();
-
-        for (int k = 0; k < 4; ++k) {
-            int nr = cur.r + dr[k];
-            int nc = cur.c + dc[k];
-
-            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols)
-                continue;
-
-            // Se ainda não exploramos essa célula
-            if (!visited[nr][nc]) {
-                visited[nr][nc] = true;
-
-                char real_cell = true_grid[nr][nc];
-                // O robô "descobre" o que existe ali
-                discovered[nr][nc] = real_cell;
-
-                // Se a célula é transitável, ele pode ir até lá
-                if (is_free(real_cell)) {
-                    q.push({nr, nc});
-                }
-            }
-        }
-    }
-
-    return discovered;
-}
-
-// Converte um caminho em comandos de movimento e chama o serviço /move_command
+// Converte caminho em chamadas ao serviço /move_command
 void follow_path_with_service(
     const std::shared_ptr<rclcpp::Node>& node,
     const rclcpp::Client<MoveCmd>::SharedPtr& move_client,
@@ -158,7 +100,6 @@ void follow_path_with_service(
         return;
     }
 
-    // Garante que o serviço está disponível
     while (!move_client->wait_for_service(1s)) {
         if (!rclcpp::ok()) {
             RCLCPP_ERROR(node->get_logger(),
@@ -169,7 +110,7 @@ void follow_path_with_service(
                     "Serviço /move_command não disponível, esperando...");
     }
 
-    rclcpp::Rate rate(3.0);  // 3 chamadas por segundo (ajuste se precisar)
+    rclcpp::Rate rate(3.0);  // 3 comandos por segundo
 
     for (size_t i = 1; i < path.size(); ++i) {
         int dr = path[i].r - path[i - 1].r;
@@ -177,11 +118,6 @@ void follow_path_with_service(
 
         std::string direction;
 
-        // Convenção:
-        // linha menor = "up"
-        // linha maior = "down"
-        // coluna menor = "left"
-        // coluna maior = "right"
         if (dr == -1 && dc == 0) {
             direction = "up";
         } else if (dr == 1 && dc == 0) {
@@ -205,8 +141,6 @@ void follow_path_with_service(
                     direction.c_str());
 
         auto future = move_client->async_send_request(request);
-
-        // Espera resposta do serviço
         auto result = rclcpp::spin_until_future_complete(node, future);
 
         if (result != rclcpp::FutureReturnCode::SUCCESS) {
@@ -223,7 +157,7 @@ void follow_path_with_service(
                         direction.c_str());
         } else {
             RCLCPP_INFO(node->get_logger(),
-                        "Movimento bem sucedido. Robô em (%d, %d), alvo em (%d, %d).",
+                        "Robô em (%d, %d), alvo em (%d, %d).",
                         response->robot_pos[0], response->robot_pos[1],
                         response->target_pos[0], response->target_pos[1]);
         }
@@ -235,52 +169,41 @@ void follow_path_with_service(
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
+    auto node = rclcpp::Node::make_shared("cg_part1_known_map");
 
-    // Cria nó
-    auto node = rclcpp::Node::make_shared("get_map_client");
-
-    // Cliente para o serviço /get_map
-    auto map_client = node->create_client<GetMap>("get_map");
-
-    // Cliente para o serviço /move_command
+    auto map_client  = node->create_client<GetMap>("get_map");
     auto move_client = node->create_client<MoveCmd>("move_command");
 
-    // Requisição vazia para /get_map
     auto request = std::make_shared<GetMap::Request>();
 
-    // Espera o serviço /get_map ficar disponível
     while (!map_client->wait_for_service(1s)) {
         if (!rclcpp::ok()) {
             RCLCPP_ERROR(node->get_logger(),
-                         "Interrupted while waiting for the /get_map service. Exiting.");
+                         "Interrompido esperando /get_map. Saindo.");
             return 0;
         }
         RCLCPP_INFO(node->get_logger(),
-                    "service /get_map not available, waiting again...");
+                    "Serviço /get_map não disponível, esperando...");
     }
 
-    // Envia requisição de forma assíncrona
     auto future_result = map_client->async_send_request(request);
 
-    // Espera resposta
     if (rclcpp::spin_until_future_complete(node, future_result) !=
         rclcpp::FutureReturnCode::SUCCESS)
     {
-        RCLCPP_ERROR(node->get_logger(), "Failed to call service /get_map");
+        RCLCPP_ERROR(node->get_logger(), "Falha ao chamar /get_map");
         rclcpp::shutdown();
         return 1;
     }
 
     auto response = future_result.get();
 
-    // Alias para facilitar
-    const auto &flat  = response->occupancy_grid_flattened;  // vetor achatado
-    const auto &shape = response->occupancy_grid_shape;      // [rows, cols]
+    const auto &flat  = response->occupancy_grid_flattened;
+    const auto &shape = response->occupancy_grid_shape;
 
-    // Verificação básica do shape
     if (shape.size() != 2) {
         RCLCPP_ERROR(node->get_logger(),
-                     "Invalid shape: expected 2 values (rows, cols), got %zu",
+                     "Shape inválido: esperado 2 valores, recebido %zu",
                      shape.size());
         rclcpp::shutdown();
         return 1;
@@ -290,18 +213,16 @@ int main(int argc, char **argv)
     uint8_t cols = shape[1];
 
     RCLCPP_INFO(node->get_logger(),
-                "Map received: %u rows x %u cols", rows, cols);
+                "Mapa recebido: %u linhas x %u colunas", rows, cols);
 
-    // Verificação de consistência entre shape e vetor achatado
     if (flat.size() != static_cast<size_t>(rows) * static_cast<size_t>(cols)) {
         RCLCPP_ERROR(node->get_logger(),
-                     "Inconsistent data: flat size = %zu, expected = %u",
+                     "Dados inconsistentes: flat size = %zu, esperado = %u",
                      flat.size(), rows * cols);
         rclcpp::shutdown();
         return 1;
     }
 
-    // Reconstruir matriz 2D (mapa completo = "grid")
     std::vector<std::vector<char>> grid;
     grid.reserve(rows);
 
@@ -310,8 +231,7 @@ int main(int argc, char **argv)
         line.reserve(cols);
 
         for (uint8_t c = 0; c < cols; ++c) {
-            size_t idx = static_cast<size_t>(r) * cols + c;  // 0..(rows*cols-1)
-            // Cada elemento de flat é algo como "b", "f", "r" ou "t"
+            size_t idx = static_cast<size_t>(r) * cols + c;
             char cell = flat[idx][0];
             line.push_back(cell);
         }
@@ -319,7 +239,6 @@ int main(int argc, char **argv)
         grid.push_back(std::move(line));
     }
 
-    // Procurar posição do robô (r) e do alvo (t)
     int robot_row  = -1;
     int robot_col  = -1;
     int target_row = -1;
@@ -339,9 +258,8 @@ int main(int argc, char **argv)
         }
     }
 
-    // ====================== IMPRESSÃO DO MAPA (PARTE 1) ======================
     std::cout << "\n=== PARTE 1: MAPA COMPLETO (conhecido) ===\n";
-    std::cout << "\n--- MAPA A PARTIR DA MATRIZ ---\n";
+    std::cout << "\n--- MAPA ---\n";
     for (uint8_t r = 0; r < rows; ++r) {
         for (uint8_t c = 0; c < cols; ++c) {
             std::cout << grid[r][c] << ' ';
@@ -350,11 +268,11 @@ int main(int argc, char **argv)
     }
 
     std::cout << "\n--- POSIÇÕES ---\n";
-    std::cout << "Robô (r) em: (" << robot_row << ", " << robot_col << ")\n";
-    std::cout << "Alvo (t) em: (" << target_row << ", " << target_col << ")\n";
+    std::cout << "Robô (r): (" << robot_row << ", " << robot_col << ")\n";
+    std::cout << "Alvo (t): (" << target_row << ", " << target_col << ")\n";
 
     if (robot_row < 0 || target_row < 0) {
-        std::cout << "\nRobô ou alvo não encontrados no mapa. Encerrando.\n";
+        std::cout << "\nRobô ou alvo não encontrados. Encerrando.\n";
         rclcpp::shutdown();
         return 0;
     }
@@ -362,11 +280,10 @@ int main(int argc, char **argv)
     Pos start{robot_row, robot_col};
     Pos goal{target_row, target_col};
 
-    // ====================== PARTE 1: BFS COM MAPA ============================
     auto path_full = bfs_path(grid, start, goal);
 
     if (path_full.empty()) {
-        std::cout << "\nNenhum caminho encontrado no mapa completo (PARTE 1)!\n";
+        std::cout << "\nNenhum caminho encontrado (PARTE 1)!\n";
     } else {
         std::cout << "\n--- CAMINHO BFS (PARTE 1, mapa conhecido) ---\n";
         for (const auto& p : path_full) {
@@ -375,60 +292,8 @@ int main(int argc, char **argv)
         std::cout << "Tamanho do caminho (parte 1): " << path_full.size() << "\n";
 
         RCLCPP_INFO(node->get_logger(),
-                    "Iniciando movimento do robô para o alvo (PARTE 1)...");
+                    "Iniciando movimento do robô (PARTE 1)...");
         follow_path_with_service(node, move_client, path_full);
-    }
-
-    // ====================== PARTE 2: MAPEAMENTO ==============================
-    std::cout << "\n=================================================\n";
-    std::cout << "=== PARTE 2: MAPEAMENTO DO LABIRINTO (sem mapa) ===\n";
-
-    // O robô não conhece o mapa; ele vai "descobrir" a partir da posição inicial.
-    auto discovered = explore_and_build_map(grid, start);
-
-    std::cout << "\n--- MAPA DESCOBERTO PELO ROBÔ (discovered) ---\n";
-    for (int r = 0; r < (int)rows; ++r) {
-        for (int c = 0; c < (int)cols; ++c) {
-            std::cout << discovered[r][c] << ' ';
-        }
-        std::cout << std::endl;
-    }
-
-    // Agora usamos o MESMO BFS da parte 1, mas em cima do mapa descoberto.
-    auto path_discovered = bfs_path(discovered, start, goal);
-
-    if (path_discovered.empty()) {
-        std::cout << "\nNenhum caminho encontrado no mapa descoberto (PARTE 2)!\n";
-    } else {
-        std::cout << "\n--- CAMINHO BFS (PARTE 2, mapa descoberto) ---\n";
-        for (const auto& p : path_discovered) {
-            std::cout << "(" << p.r << ", " << p.c << ")\n";
-        }
-        std::cout << "Tamanho do caminho (parte 2): " << path_discovered.size() << "\n";
-
-        RCLCPP_INFO(node->get_logger(),
-                    "Iniciando movimento do robô (PARTE 2 - mapa descoberto)...");
-        follow_path_with_service(node, move_client, path_discovered);
-    }
-
-    // Comparação simples entre as rotas
-    if (!path_full.empty() && !path_discovered.empty()) {
-        bool same_length = (path_full.size() == path_discovered.size());
-        bool same_path = same_length;
-
-        if (same_path) {
-            for (size_t i = 0; i < path_full.size(); ++i) {
-                if (path_full[i].r != path_discovered[i].r ||
-                    path_full[i].c != path_discovered[i].c) {
-                    same_path = false;
-                    break;
-                }
-            }
-        }
-
-        std::cout << "\n--- COMPARAÇÃO ENTRE PARTE 1 E PARTE 2 ---\n";
-        std::cout << "Mesmo tamanho de caminho? " << (same_length ? "Sim" : "Não") << "\n";
-        std::cout << "Mesmas coordenadas na sequência? " << (same_path ? "Sim" : "Não") << "\n";
     }
 
     rclcpp::shutdown();
